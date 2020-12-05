@@ -4,6 +4,7 @@ import time
 import uerrno
 import sys
 from select import select
+import gc
 
 freq = 7040000
 version = 1
@@ -147,9 +148,9 @@ def process_received_data(buffer, conn):
         # Discard the part of the buffer that was successfully processed
         buffer = buffer[i+4:]
 
-print("# Starting server")
-
 # Main setup
+print("# Starting server")
+gc.collect()
 
 # Read the WIFI credentials from the local filesystem
 wifi_essid = None
@@ -160,8 +161,8 @@ try:
   content = f.readlines()
   f.close()
   if len(content) >= 2:
-    wifi_essid = content[0]
-    wifi_password = content[1]
+    wifi_essid = content[0].strip()
+    wifi_password = content[1].strip()
 except:
   print("# Unable to read WIFI credentials")
   pass
@@ -172,12 +173,14 @@ if not wifi_essid is None:
   sta_nic = network.WLAN(network.STA_IF)
   sta_nic.active(True)
   sta_nic.connect(wifi_essid, wifi_password)
+  # TODO: Timeout on this 
   while not sta_nic.isconnected():
     pass
 
 # Make sure we are listening as an Access Point to support configuration
 ap_nic = network.WLAN(network.AP_IF)
 ap_nic.active(True)
+# TODO: Timeout on this
 while ap_nic.active() == False:
   pass
 ap_nic.config(essid="KC1FSZ-Controller")
@@ -202,16 +205,19 @@ def report_network_status():
     print("n 0")
 
 
-def do_stdin_read(item):
-  global run_flag
+def print_status():
   global version
   global frequency 
+  print("q " + str(version) + " " + str(freq) + " " + str(gc.mem_free()))
+
+def do_stdin_read(item):
+  global run_flag
 
   r = item[0].read(1)
   if r == "x":
     run_flag = False
   elif r == "q":
-    print("q " + str(version) + " " + str(freq))
+    print_status()
   elif r == "n":
     report_network_status()
   else:
