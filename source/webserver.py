@@ -5,19 +5,15 @@ import uerrno
 import sys
 from select import select
 
-sta_if = network.WLAN(network.STA_IF)
-sta_if.active(True)
-
-# Change name/password of ESP8266's AP:
-print("# Starting server")
-print("#", sta_if.ifconfig())
-
 freq = 7040000
+version = 1
+
 
 def format_khz(f):
   kh = int(f / 1000)
   frac = int(f % 1000)
   return "{0:,d}".format(kh) + "." + "{0:03d}".format(frac)
+
 
 def web_page():
   global freq
@@ -51,9 +47,10 @@ def web_page():
 def send_response(content, content_type, conn):
   conn.send(bytes("HTTP/1.1 200 OK\r\n", "utf8"))
   conn.send(bytes("Content-Type: " + content_type + "\r\n", "utf8"))
-  #conn.send(bytes("Connection: close\r\n\r\n", "utf8"))
+  conn.send(bytes("Connection: close\r\n", "utf8"))
   conn.send(bytes("\r\n", "utf8"))
   conn.sendall(bytes(content, "utf8"))
+
 
 def send_static(fn, conn):
   # Open file and send
@@ -66,9 +63,9 @@ def send_static(fn, conn):
   content_type = "text/css"
   send_response(content, content_type, conn)
 
+
 def process_get(url, query_parameters, headers, conn):
   global freq
-  #print("URL", url, query_parameters)
   if url == "/main.css":
     send_static("/main.css", conn)
   elif url == "/":
@@ -91,110 +88,177 @@ def process_get(url, query_parameters, headers, conn):
     # Re-render
     response = web_page()
     send_response(response, "text/html", conn)
-    print("F " + str(int(freq)))
+    # Report frequency
+    print("f " + str(int(freq)))
   else:
     conn.send(bytes("HTTP/1.1 401 NOTFOUND\r\n", "utf8"))
     conn.send(bytes("Connection: close\r\n\r\n", "utf8"))
 
 
+# This is the function that processes the data received from 
+# the HTTP client. 
 def process_received_data(buffer, conn):
-  # Check to see if we've got a blank line yet
-  i = buffer.find("\r\n\r\n")
-  if i == -1:
-    return buffer
-  else:
-    # Pull off the complete request
-    request = buffer[0:i]
-    # Parse the request 
-    request_line, headers = request.split("\r\n", 1)  
-    # First line (space delimited): METHOD URL PROTOCOL
-    request_method, request_url, request_proto = request_line.split(" ")
-    # Pull out the query parameters and put them into a dictionary
-    query_parameters = {}
-    request_url_components = request_url.split("?")
-    request_url = request_url_components[0]
-    if len(request_url_components) > 1:
-      query_parameter_parts = request_url_components[1].split("&")
-      for query_parameter_part in query_parameter_parts:
-          tokens = query_parameter_part.split("=")
-          if len(tokens) > 1:
-            name = tokens[0]
-            value = tokens[1]
-            query_parameters[name] = value
-    # Header lines
-    header_lines = headers.split("\r\n")
-    headers = {}
-    for header_line in header_lines:
-        tokens = header_line.split(":")
-        if len(tokens) >= 2:
-          name = tokens[0]
-          value = tokens[1]
-          headers[name.strip()] = value.strip()
-    #print("Headers", headers)
-    process_get(request_url, query_parameters, headers, conn)
-    return buffer[i+4:]
+  # It is possible that multiple requests are contained in the 
+  # same request so we keep on cycling until the entire buffer
+  # is consumed.
+  while True:
+    if len(buffer) == 0:
+      return ""
+    else:
+      # Check to see if we've got a blank line that indicates the 
+      # end of the HTTP request.
+      i = buffer.find("\r\n\r\n")
+      if i == -1:
+        return buffer
+      else:
+        # Pull off the complete request
+        request = buffer[0:i]
+        # Parse the request 
+        request_line, headers_raw = request.split("\r\n", 1)  
+        # First line (space delimited): METHOD URL PROTOCOL
+        request_method, request_url, request_proto = request_line.split(" ")
 
+        # Pull out the query parameters and put them into a dictionary
+        query_parameters = {}
+        request_url_components = request_url.split("?")
+        request_url = request_url_components[0]
+        if len(request_url_components) > 1:
+          query_parameter_parts = request_url_components[1].split("&")
+          for query_parameter_part in query_parameter_parts:
+              tokens = query_parameter_part.split("=")
+              if len(tokens) > 1:
+                name = tokens[0]
+                value = tokens[1]
+                query_parameters[name] = value
+
+        # Pull out the headers and put them in a dictioary
+        headers = {}
+        header_lines = headers_raw.split("\r\n")
+        for header_line in header_lines:
+            tokens = header_line.split(":")
+            if len(tokens) >= 2:
+              name = tokens[0]
+              value = tokens[1]
+              headers[name.strip()] = value.strip()
+
+        # Process the GET request
+        process_get(request_url, query_parameters, headers, conn)
+
+        # Discard the part of the buffer that was successfully processed
+        buffer = buffer[i+4:]
+
+# Main setup
+sta_if = network.WLAN(network.STA_IF)
+sta_if.active(True)
+
+print("# Starting server")
 
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 s.bind(('', 8080))
 s.listen(5)
 s.setblocking(False)
-timeout = 0.05
 
-# Main event loop
-while True:
+select_timeout = 0.250
+# This is the list of items that select will watch for
+select_list = []
+# Flag to keep things going
+run_flag = True
 
-  # Check for stdin
-  rlist, _, _ = select([sys.stdin, s], [], [], timeout)
-  if rlist:
-    print("# hit", rlist)
-    if rlist[0] == sys.stdin:
-      r = sys.stdin.read(1)
-      print("# got ",r)
 
+def report_network_status():
+  if sta_if.isconnected():
+    print("n 1", sta_if.ifconfig()[0])
+  else:
+    print("n 0")
+
+
+def do_stdin_read(item):
+  global run_flag
+  global version
+  global frequency 
+
+  r = item[0].read(1)
+  if r == "x":
+    run_flag = False
+  elif r == "q":
+    print("q " + str(version) + " " + str(freq))
+  elif r == "n":
+    report_network_status()
+  else:
+    print("# stdin got",r)    
+
+
+def do_client_read(item):
+  conn = item[0]
+  try:
+    # Read some data off the socket
+    rdata = conn.recv(1024)
+    # If there is no data then the client has disconnected
+    if len(rdata) == 0:
+      print("# Closing client (1)")
+      conn.close()
+      # Mark the item has unused
+      item[0] = None
+    else:
+      rdata = rdata.decode("utf8")
+      # Here is where we accumlate the data received for a client
+      item[2] = item[2] + rdata
+      # Anything left over will be left in the accumulator for 
+      # later (when the rest of the request is received)
+      item[2] = process_received_data(item[2], conn)
+      # If there is anything left in the buffer then stand by for 
+      # more activity, otherwise we close the connection.
+      if len(item[2]) == 0:
+        conn.close()
+        item[0] = None
+  except Exception as ex:
+    # Any error should cause the socket to be terminated
+    print("# Closing client (error)", ex.args[0])
+    conn.close()
+    item[0] = None
+    
+
+# This function should be called when a server socket is 
+# ready to accept a new connection 
+def do_socket_accept(item):
+  global select_list
   try:
     # Attempt to receive a connection from a web client
-    conn, addr = s.accept()
-    print("# Connection", str(addr))
+    conn, addr = item[0].accept()
+    #print("# Connection", str(addr))
     conn.setblocking(False)
-    # This is where we gather the request
-    accumulator = ""
-    tries = 0
-    # Data processing loop
-    while True:
-      try:
-        tries = tries + 1
-        rdata = conn.recv(1024)
-        if len(rdata) == 0:
-          break
-        rdata = rdata.decode("utf8")
-        accumulator = accumulator + rdata
-        accumulator = process_received_data(accumulator, conn)
-        # Was a complete message processed?
-        if accumulator == "":
-          break
-        # Still trying to accumulate a request, but don't spin
-        time.sleep_ms(50)
-      except OSError as e:
-        if e.args[0] == uerrno.EAGAIN:
-          if tries <= 4:
-            # Still waiting for data, but don't spin
-            time.sleep_ms(50)
-            continue
-          else:
-            print("# Timeout")
-            break
-        else:
-          print("# Other error")
-          break
+    # Schedule read monitoring for the new client
+    select_list.append([conn, do_client_read, ""])
+  except OSError as ex:
+    print("# Accept error", ex.args[0])
 
-      """
-      """
-    conn.close()
+report_network_status()
 
-  except OSError as e:
-    time.sleep_ms(100)
+# Schedule monitoring of server socket
+select_list.append([s, do_socket_accept])
+# Schedule monitoring of stdin
+select_list.append([sys.stdin, do_stdin_read])
+
+# Main event loop
+while run_flag:
+
+  # Check for activity.  Make a list of all of the files 
+  # that we are waiting for read activity on
+  poll_list = []
+  for select_item in select_list:
+    poll_list.append(select_item[0])
+  # Here is where the brief blocking happens to see if any 
+  # I/O is possible:
+  rlist, _, _ = select(poll_list, [], [], select_timeout)
+  if rlist:
+    # Figure out which item needs attention
+    for select_item in select_list:
+      if rlist[0] == select_item[0]:
+        # Fire callback that was registered
+        select_item[1](select_item)
+  # Clean out list of any dead items
+  select_list = [item for item in select_list if item[0] != None]
 
 s.close()
-
+print("# Shutting down")
