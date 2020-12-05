@@ -23,7 +23,7 @@ def web_page():
   <head> 
   <title>VFO Control</title> 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <link href="main.css" rel="stylesheet"/>
+  <link href="static/main.css" rel="stylesheet"/>
   </head>
   <body> 
   <p class="freq">VFO: """ + format_khz(freq) + """
@@ -53,22 +53,71 @@ def send_response(content, content_type, conn):
   conn.sendall(bytes(content, "utf8"))
 
 
-def send_static(fn, conn):
-  # Open file and send
-  # TODO: ERROR
-  f = open(fn)
-  # This reads everything apparently
-  content = f.read()
-  f.close()
-  # TODO: AUTO MAPPING
-  content_type = "text/css"
-  send_response(content, content_type, conn)
+def detect_content_type(name):
+  if name.endswith(".css"):
+    return "text/css"
+  elif name.endswith(".ico"):
+    return "image/x-icon"
+  else:
+    return "application/octet-stream"
+
+
+def send_all_blocking(conn, buf):
+  """ Performs a blocking write for a buffer.
+      Works even if the underlying socket is non-blocking. """
+  # TODO: Timeout is needed to prevent hang
+  while len(buf) > 0:
+    # TODO: ADD SELECT FOR EFFICIENCY
+    try:
+      rc = conn.send(buf)
+      if rc > 0:
+        # Progress, reduce size of buffer
+        buf = buf[rc:]
+      else:
+        # No spin
+        time.sleep_ms(1)
+    except OSError as ex:
+      if ex.args[0] == uerrno.EAGAIN:
+        # No spin
+        time.sleep_ms(1)
+      else:
+        print("# static file error", ex.args[0])
+        break
+
+def send_static_file(fn, conn):
+  """ Sends a static file from the local filesystem
+  """ 
+  content_type = detect_content_type(fn)
+  try:
+    with open(fn, "b") as f:
+      conn.send(bytes("HTTP/1.1 200 OK\r\n", "utf8"))
+      conn.send(bytes("Content-Type: " + content_type + "\r\n", "utf8"))
+      # Enable caching for static assets
+      conn.send(bytes("Cache-Control: public, max-age=604800, immutable\r\n", "utf8"))
+      conn.send(bytes("Connection: close\r\n", "utf8"))
+      conn.send(bytes("\r\n", "utf8"))
+      # Transfer in small chunks to avoid memory issues
+      while True:
+        chunk = f.read(512)
+        if len(chunk) == 0:
+          break
+        send_all_blocking(conn, chunk)
+  except Exception as ex:
+    print("# static file error", ex.args[0])
+    conn.send(bytes("HTTP/1.1 401 NOTFOUND\r\n", "utf8"))
+    conn.send(bytes("Connection: close\r\n", "utf8"))
+    conn.send(bytes("\r\n", "utf8"))
 
 
 def process_get(url, query_parameters, headers, conn):
   global freq
-  if url == "/main.css":
-    send_static("/main.css", conn)
+  # Static artifacts
+  if url.startswith("/static/"):
+    send_static_file(url, conn)
+  # The shortcut icon
+  elif url == "/favicon.ico":
+    send_static_file("/static/favicon.ico", conn)
+  # The main page
   elif url == "/":
     # Process form actions if any
     if "cmd" in query_parameters:
@@ -183,7 +232,7 @@ ap_nic.active(True)
 # TODO: Timeout on this
 while ap_nic.active() == False:
   pass
-ap_nic.config(essid="KC1FSZ-Controller")
+ap_nic.config(essid="KC1FSZ-VFO")
 
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
