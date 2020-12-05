@@ -147,15 +147,44 @@ def process_received_data(buffer, conn):
         # Discard the part of the buffer that was successfully processed
         buffer = buffer[i+4:]
 
-# Main setup
-sta_if = network.WLAN(network.STA_IF)
-sta_if.active(True)
-
 print("# Starting server")
+
+# Main setup
+
+# Read the WIFI credentials from the local filesystem
+wifi_essid = None
+wifi_password = None
+
+try:
+  f = open("wifi_credentials.txt")
+  content = f.readlines()
+  f.close()
+  if len(content) >= 2:
+    wifi_essid = content[0]
+    wifi_password = content[1]
+except:
+  print("# Unable to read WIFI credentials")
+  pass
+
+# If possible, connect to the local WIFI network
+if not wifi_essid is None:
+  print("# Connecting to", wifi_essid)
+  sta_nic = network.WLAN(network.STA_IF)
+  sta_nic.active(True)
+  sta_nic.connect(wifi_essid, wifi_password)
+  while not sta_nic.isconnected():
+    pass
+
+# Make sure we are listening as an Access Point to support configuration
+ap_nic = network.WLAN(network.AP_IF)
+ap_nic.active(True)
+while ap_nic.active() == False:
+  pass
+ap_nic.config(essid="KC1FSZ-Controller")
 
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(('', 8080))
+s.bind(('', 80))
 s.listen(5)
 s.setblocking(False)
 
@@ -167,8 +196,8 @@ run_flag = True
 
 
 def report_network_status():
-  if sta_if.isconnected():
-    print("n 1", sta_if.ifconfig()[0])
+  if sta_nic.isconnected():
+    print("n 1", sta_nic.ifconfig()[0])
   else:
     print("n 0")
 
