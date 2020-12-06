@@ -40,6 +40,12 @@ def root_page():
   <button type="submit" name="cmd" value="up100">Up 0.1K</button>
   <button type="submit" name="cmd" value="up500">Up 0.5K</button>
   <button type="submit" name="cmd" value="up1000">Up 1.0K</button>
+  <br/>
+  <br/>
+  <br/>
+  <label>Command:</label>
+  <input type="text" name="cmd_text" size="40"/>
+  <button type="submit" name="cmd" value="send">Send</button>
   </form>
   </body>
   </html>
@@ -82,23 +88,6 @@ def save_wifi_credentials(essid, password):
     print("# Unable to save WIFI credentials")
 
 
-def send_response(content, content_type, conn):
-  conn.send(bytes("HTTP/1.1 200 OK\r\n", "utf8"))
-  conn.send(bytes("Content-Type: " + content_type + "\r\n", "utf8"))
-  conn.send(bytes("Connection: close\r\n", "utf8"))
-  conn.send(bytes("\r\n", "utf8"))
-  conn.sendall(bytes(content, "utf8"))
-
-
-def detect_content_type(name):
-  if name.endswith(".css"):
-    return "text/css"
-  elif name.endswith(".ico"):
-    return "image/x-icon"
-  else:
-    return "application/octet-stream"
-
-
 def send_all_blocking(conn, buf):
   """ Performs a blocking write for a buffer.
       Works even if the underlying socket is non-blocking. """
@@ -120,6 +109,24 @@ def send_all_blocking(conn, buf):
       else:
         print("# static file error", ex.args[0])
         break
+
+
+def send_response(content, content_type, conn):
+  conn.send(bytes("HTTP/1.1 200 OK\r\n", "utf8"))
+  conn.send(bytes("Content-Type: " + content_type + "\r\n", "utf8"))
+  conn.send(bytes("Connection: close\r\n", "utf8"))
+  conn.send(bytes("\r\n", "utf8"))
+  send_all_blocking(conn, bytes(content, "utf8"))
+
+
+def detect_content_type(name):
+  if name.endswith(".css"):
+    return "text/css"
+  elif name.endswith(".ico"):
+    return "image/x-icon"
+  else:
+    return "application/octet-stream"
+
 
 def send_static_file(fn, conn):
   """ Sends a static file from the local filesystem
@@ -180,6 +187,8 @@ def process_get(url, query_parameters, headers, conn):
         freq = freq - 100
       elif query_parameters["cmd"] == "edit" and query_parameters["freq"] != "":
         freq = int(query_parameters["freq"]) * 1000
+      elif query_parameters["cmd"] == "send" and query_parameters["cmd_text"] != "":
+        print("c",query_parameters["cmd_text"])
     # Re-render
     send_response(root_page(), "text/html", conn)
     # Report frequency
@@ -400,3 +409,4 @@ while run_flag:
 
 s.close()
 print("# Shutting down")
+
