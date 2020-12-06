@@ -5,6 +5,7 @@ import uerrno
 import sys
 from select import select
 import gc
+import machine 
 
 freq = 7040000
 version = 1
@@ -16,7 +17,7 @@ def format_khz(f):
   return "{0:,d}".format(kh) + "." + "{0:03d}".format(frac)
 
 
-def web_page():
+def root_page():
   global freq
   html = """
   <html>
@@ -44,6 +45,42 @@ def web_page():
   </html>
   """
   return html
+
+def setup_page():
+  global freq
+  html = """
+  <html>
+  <head> 
+  <title>VFO Control Setup</title> 
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link href="static/main.css" rel="stylesheet"/>
+  </head>
+  <body> 
+  <h1>WIFI Configuration</h1>
+  <form action="/setup" method="get">
+  <label>ESSID:</lable>
+  <input type="text" size="40" name="essid"/>
+  <label>Password:</lable>
+  <input type="text" name="password"/>
+  <button type="submit">Save</button>
+  </form>
+  </body>
+  </html>
+  """
+  return html
+
+def save_wifi_credentials(essid, password):
+  """ Saves the WIFI credentials on the local filesystem """
+  try:
+    f = open("wifi_credentials.txt","w")
+    f.write(essid)
+    f.write("\n")
+    f.write(password)
+    f.write("\n")
+    f.close()
+  except:
+    print("# Unable to save WIFI credentials")
+
 
 def send_response(content, content_type, conn):
   conn.send(bytes("HTTP/1.1 200 OK\r\n", "utf8"))
@@ -117,6 +154,14 @@ def process_get(url, query_parameters, headers, conn):
   # The shortcut icon
   elif url == "/favicon.ico":
     send_static_file("/static/favicon.ico", conn)
+  # The setup url
+  elif url == "/setup":
+    if "essid" in query_parameters and "password" in query_parameters:
+      save_wifi_credentials(query_parameters["essid"], query_parameters["password"])
+      # Reboot
+      machine.reset()
+    # Re-render
+    send_response(setup_page(), "text/html", conn)
   # The main page
   elif url == "/":
     # Process form actions if any
@@ -136,13 +181,19 @@ def process_get(url, query_parameters, headers, conn):
       elif query_parameters["cmd"] == "edit" and query_parameters["freq"] != "":
         freq = int(query_parameters["freq"]) * 1000
     # Re-render
-    response = web_page()
-    send_response(response, "text/html", conn)
+    send_response(root_page(), "text/html", conn)
     # Report frequency
     print("f " + str(int(freq)))
   else:
     conn.send(bytes("HTTP/1.1 401 NOTFOUND\r\n", "utf8"))
     conn.send(bytes("Connection: close\r\n\r\n", "utf8"))
+
+
+def urldecode(s):
+  """ Reverses URL encoding. 
+      NOTE: This needs a lot of work. 
+  """
+  return s.replace("+"," ")
 
 
 # This is the function that processes the data received from 
@@ -176,9 +227,9 @@ def process_received_data(buffer, conn):
           query_parameter_parts = request_url_components[1].split("&")
           for query_parameter_part in query_parameter_parts:
               tokens = query_parameter_part.split("=")
-              if len(tokens) > 1:
+              if len(tokens) >= 2:
                 name = tokens[0]
-                value = tokens[1]
+                value = urldecode(tokens[1])
                 query_parameters[name] = value
 
         # Pull out the headers and put them in a dictioary
@@ -223,8 +274,10 @@ if not wifi_essid is None:
   sta_nic.active(True)
   sta_nic.connect(wifi_essid, wifi_password)
   # TODO: Timeout on this 
-  while not sta_nic.isconnected():
-    pass
+  #while not sta_nic.isconnected():
+  #  pass
+else:
+  sta_nic = None
 
 # Make sure we are listening as an Access Point to support configuration
 ap_nic = network.WLAN(network.AP_IF)
@@ -248,7 +301,7 @@ run_flag = True
 
 
 def report_network_status():
-  if sta_nic.isconnected():
+  if not sta_nic is None and sta_nic.isconnected():
     print("n 1", sta_nic.ifconfig()[0])
   else:
     print("n 0")
@@ -269,6 +322,8 @@ def do_stdin_read(item):
     print_status()
   elif r == "n":
     report_network_status()
+  elif r == "r":
+    machine.reset()
   else:
     print("# stdin got",r)    
 
@@ -280,7 +335,6 @@ def do_client_read(item):
     rdata = conn.recv(1024)
     # If there is no data then the client has disconnected
     if len(rdata) == 0:
-      print("# Closing client (1)")
       conn.close()
       # Mark the item has unused
       item[0] = None
